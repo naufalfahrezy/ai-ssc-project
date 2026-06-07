@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { GoogleGenerativeAIEmbeddings } from '@langchain/google-genai';
-import { PDFParse } from 'pdf-parse';
 import mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabaseClient';
 
+const pdfParse = require('pdf-parse/lib/pdf-parse.js');
+
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 const SUPPORTED_TYPES = [
     'application/pdf',
@@ -17,22 +19,58 @@ const SUPPORTED_TYPES = [
     'application/vnd.ms-excel',
 ];
 
+const SUPPORTED_EXTENSIONS = ['pdf', 'docx', 'xlsx', 'csv'];
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_CHUNKS = 30;
+const EMBEDDING_DIMENSION = 768;
+
+function jsonResponse(data: Record<string, unknown>, status = 200) {
+    return NextResponse.json(data, { status });
+}
+
 function getFileExtension(fileName: string) {
     return fileName.split('.').pop()?.toLowerCase() ?? '';
+}
+
+function cleanText(text: string) {
+    return text
+        .replace(/\u0000/g, '')
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+async function parsePdf(buffer: Buffer) {
+    try {
+        const result = await pdfParse(buffer);
+
+        if (!result || typeof result.text !== 'string') {
+            throw new Error('Hasil parsing PDF tidak valid.');
+        }
+
+        return result.text;
+    } catch (error) {
+        console.error('PDF parse error:', error);
+
+        throw new Error(
+            error instanceof Error
+                ? `Gagal membaca PDF: ${error.message}`
+                : 'Gagal membaca PDF.'
+        );
+    }
 }
 
 async function extractTextFromFile(file: File, buffer: Buffer) {
     const extension = getFileExtension(file.name);
 
     if (file.type === 'application/pdf' || extension === 'pdf') {
-        const parser = new PDFParse({ data: buffer });
-        const result = await parser.getText();
-        await parser.destroy();
-        return result.text;
+        return await parsePdf(buffer);
     }
 
     if (
-        file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+        file.type ===
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
         extension === 'docx'
     ) {
         const result = await mammoth.extractRawText({ buffer });
@@ -40,7 +78,8 @@ async function extractTextFromFile(file: File, buffer: Buffer) {
     }
 
     if (
-        file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+        file.type ===
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
         extension === 'xlsx'
     ) {
         const workbook = XLSX.read(buffer, { type: 'buffer' });
@@ -49,10 +88,7 @@ async function extractTextFromFile(file: File, buffer: Buffer) {
             const worksheet = workbook.Sheets[sheetName];
             const csvText = XLSX.utils.sheet_to_csv(worksheet);
 
-            return [
-                `Sheet: ${sheetName}`,
-                csvText,
-            ].join('\n');
+            return `Sheet: ${sheetName}\n${csvText}`;
         });
 
         return sheetsText.join('\n\n');
@@ -72,13 +108,28 @@ async function extractTextFromFile(file: File, buffer: Buffer) {
 
 export async function POST(req: NextRequest) {
     try {
+        console.log('Knowledge API called');
+
+        if (!process.env.GOOGLE_API_KEY) {
+            return jsonResponse(
+                {
+                    success: false,
+                    error: 'GOOGLE_API_KEY belum diset di Environment Variables.',
+                },
+                500
+            );
+        }
+
         const formData = await req.formData();
         const file = formData.get('file') as File | null;
 
         if (!file) {
-            return NextResponse.json(
-                { error: 'File tidak ditemukan.' },
-                { status: 400 }
+            return jsonResponse(
+                {
+                    success: false,
+                    error: 'File tidak ditemukan.',
+                },
+                400
             );
         }
 
@@ -86,43 +137,46 @@ export async function POST(req: NextRequest) {
 
         const isSupported =
             SUPPORTED_TYPES.includes(file.type) ||
-            ['pdf', 'docx', 'xlsx', 'csv'].includes(extension);
+            SUPPORTED_EXTENSIONS.includes(extension);
 
         if (!isSupported) {
-            return NextResponse.json(
+            return jsonResponse(
                 {
-                    error: 'Format file belum didukung. Gunakan PDF, DOCX, XLSX, atau CSV.',
+                    success: false,
+                    error:
+                        'Format file belum didukung. Gunakan PDF, DOCX, XLSX, atau CSV.',
+                    received_type: file.type || null,
+                    received_extension: extension || null,
                 },
-                { status: 400 }
+                400
             );
         }
 
-        const maxSize = 10 * 1024 * 1024;
-
-        if (file.size > maxSize) {
-            return NextResponse.json(
-                { error: 'Ukuran file maksimal 10MB.' },
-                { status: 400 }
+        if (file.size > MAX_FILE_SIZE) {
+            return jsonResponse(
+                {
+                    success: false,
+                    error: 'Ukuran file maksimal 10MB.',
+                    file_size: file.size,
+                },
+                400
             );
         }
 
         const arrayBuffer = await file.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
 
-        const content = await extractTextFromFile(file, buffer);
-        const cleanContent = content
-            .replace(/\u0000/g, '')
-            .replace(/[ \t]+/g, ' ')
-            .replace(/\n{3,}/g, '\n\n')
-            .trim();
+        const rawContent = await extractTextFromFile(file, buffer);
+        const cleanContent = cleanText(rawContent);
 
         if (!cleanContent) {
-            return NextResponse.json(
+            return jsonResponse(
                 {
+                    success: false,
                     error:
                         'File berhasil dibaca, tetapi tidak ditemukan teks yang bisa diproses.',
                 },
-                { status: 400 }
+                400
             );
         }
 
@@ -131,12 +185,23 @@ export async function POST(req: NextRequest) {
             chunkOverlap: 200,
         });
 
-        const chunks = await splitter.splitText(cleanContent);
+        const allChunks = await splitter.splitText(cleanContent);
+        const chunks = allChunks.slice(0, MAX_CHUNKS);
+
+        if (chunks.length === 0) {
+            return jsonResponse(
+                {
+                    success: false,
+                    error: 'Konten file tidak menghasilkan chunk yang valid.',
+                },
+                400
+            );
+        }
 
         const embeddings = new GoogleGenerativeAIEmbeddings({
-            apiKey: process.env.GOOGLE_API_KEY!,
+            apiKey: process.env.GOOGLE_API_KEY,
             model: 'gemini-embedding-001',
-            outputDimensionality: 768,
+            outputDimensionality: EMBEDDING_DIMENSION,
         } as any);
 
         const rows = [];
@@ -144,8 +209,21 @@ export async function POST(req: NextRequest) {
         for (let index = 0; index < chunks.length; index++) {
             const chunk = chunks[index];
 
-            const embedding3072 = await embeddings.embedQuery(chunk);
-            const embedding = embedding3072.slice(0, 768);
+            const rawEmbedding = await embeddings.embedQuery(chunk);
+
+            if (!Array.isArray(rawEmbedding)) {
+                throw new Error(
+                    'Embedding gagal dibuat. Hasil embedding bukan array.'
+                );
+            }
+
+            if (rawEmbedding.length < EMBEDDING_DIMENSION) {
+                throw new Error(
+                    `Dimensi embedding terlalu kecil. Dapat ${rawEmbedding.length}, minimal ${EMBEDDING_DIMENSION}.`
+                );
+            }
+
+            const embedding = rawEmbedding.slice(0, EMBEDDING_DIMENSION);
 
             rows.push({
                 file_name: file.name,
@@ -159,8 +237,11 @@ export async function POST(req: NextRequest) {
                     chunk_index: index,
                     chunk_size: chunk.length,
                     total_chunks: chunks.length,
+                    original_total_chunks: allChunks.length,
+                    is_limited: allChunks.length > MAX_CHUNKS,
                     embedding_model: 'gemini-embedding-001',
-                    embedding_dimension: 768,
+                    original_embedding_dimension: rawEmbedding.length,
+                    stored_embedding_dimension: EMBEDDING_DIMENSION,
                 },
                 is_active: true,
             });
@@ -170,29 +251,42 @@ export async function POST(req: NextRequest) {
 
         if (error) {
             console.error('Supabase insert error:', error);
-            return NextResponse.json(
-                { error: `Gagal menyimpan ke database: ${error.message}` },
-                { status: 500 }
+
+            return jsonResponse(
+                {
+                    success: false,
+                    error: `Gagal menyimpan ke database: ${error.message}`,
+                    details: error,
+                },
+                500
             );
         }
 
-        return NextResponse.json({
-            message: 'Dokumen berhasil diproses dan disimpan.',
-            file_name: file.name,
-            file_type: file.type || extension,
-            chunks: chunks.length,
-        });
+        return jsonResponse(
+            {
+                success: true,
+                message: 'Dokumen berhasil diproses dan disimpan.',
+                file_name: file.name,
+                file_type: file.type || extension,
+                chunks: chunks.length,
+                original_total_chunks: allChunks.length,
+                is_limited: allChunks.length > MAX_CHUNKS,
+                stored_embedding_dimension: EMBEDDING_DIMENSION,
+            },
+            200
+        );
     } catch (error) {
         console.error('Knowledge upload error:', error);
 
-        return NextResponse.json(
+        return jsonResponse(
             {
+                success: false,
                 error:
                     error instanceof Error
                         ? error.message
                         : 'Gagal memproses dokumen knowledge base.',
             },
-            { status: 500 }
+            500
         );
     }
 }
