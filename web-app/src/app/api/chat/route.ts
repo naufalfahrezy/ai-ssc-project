@@ -409,7 +409,7 @@ async function saveChatSession({
         ...currentHistory,
         { role: 'user', content: userMessage },
         { role: 'bot', content: botReply },
-    ];
+    ].slice(-40);
 
     const { error } = await supabaseAdmin
         .from('chat_sessions')
