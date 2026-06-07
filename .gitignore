@@ -1,0 +1,13 @@
+node_modules
+.next
+.env
+.env.local
+
+web-app/.env.local
+web-app/.next
+web-app/node_modules
+
+wa-gateway/.env
+wa-gateway/node_modules
+wa-gateway/auth_info_baileys
+wa-gateway/data
