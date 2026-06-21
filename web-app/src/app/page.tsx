@@ -47,6 +47,19 @@ type ChatMessage = {
   sources?: string[];
 };
 
+type WaGatewayStatus = {
+  connected?: boolean;
+  phone?: string;
+  message?: string;
+  settings?: {
+    botEnabled?: boolean;
+    quotedReply?: boolean;
+    responseMode?: string;
+  };
+};
+
+const WA_GATEWAY_STATUS_URL = 'https://ai-ssc-project-production.up.railway.app/status';
+
 const INITIAL_MESSAGE: ChatMessage = {
   role: 'bot',
   content:
@@ -146,6 +159,9 @@ export default function LandingPage() {
   const [showScrollTop, setShowScrollTop] = useState(false);
 
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [showChannelOptions, setShowChannelOptions] = useState(false);
+  const [waGatewayStatus, setWaGatewayStatus] = useState<WaGatewayStatus | null>(null);
+  const [isCheckingWaStatus, setIsCheckingWaStatus] = useState(false);
   const [chatStep, setChatStep] = useState<ChatStep>('onboarding');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [userData, setUserData] = useState({ name: '', nim: '', waNumber: '' });
@@ -204,13 +220,33 @@ export default function LandingPage() {
       setShowScrollTop(window.scrollY > 420);
     };
 
-    window.addEventListener('scroll', handleScroll);
-    document.documentElement.style.scrollBehavior = 'smooth';
+    window.addEventListener('scroll', handleScroll, { passive: true });
 
     return () => {
       window.removeEventListener('scroll', handleScroll);
-      document.documentElement.style.scrollBehavior = 'auto';
     };
+  }, []);
+
+  useEffect(() => {
+    const revealElements = document.querySelectorAll<HTMLElement>('.sisca-reveal');
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+
+          window.requestAnimationFrame(() => {
+            entry.target.classList.add('sisca-visible');
+          });
+          observer.unobserve(entry.target);
+        });
+      },
+      { threshold: 0.08, rootMargin: '0px 0px -40px 0px' }
+    );
+
+    revealElements.forEach((element) => observer.observe(element));
+
+    return () => observer.disconnect();
   }, []);
 
   const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -569,6 +605,70 @@ export default function LandingPage() {
     }
   };
 
+  const normalizeWhatsAppNumber = (phone?: string) => {
+    if (!phone) return '';
+
+    let cleaned = phone.replace(/\D/g, '');
+
+    if (cleaned.startsWith('0')) {
+      cleaned = `62${cleaned.slice(1)}`;
+    }
+
+    return cleaned;
+  };
+
+  const waBotNumber = normalizeWhatsAppNumber(waGatewayStatus?.phone);
+  const isWhatsAppBotAvailable = Boolean(waGatewayStatus?.connected && waBotNumber);
+
+  const fetchWaGatewayStatus = async () => {
+    setIsCheckingWaStatus(true);
+
+    try {
+      const response = await fetch(WA_GATEWAY_STATUS_URL, {
+        method: 'GET',
+        cache: 'no-store',
+      });
+
+      if (!response.ok) throw new Error('Gagal mengambil status WhatsApp Gateway');
+
+      const data: WaGatewayStatus = await response.json();
+      setWaGatewayStatus(data);
+    } catch (error) {
+      console.error('Gagal mengecek status WhatsApp Gateway:', error);
+      setWaGatewayStatus(null);
+    } finally {
+      setIsCheckingWaStatus(false);
+    }
+  };
+
+  const handleToggleChannelOptions = async () => {
+    const nextValue = !showChannelOptions;
+    setShowChannelOptions(nextValue);
+
+    if (nextValue) {
+      await fetchWaGatewayStatus();
+    }
+  };
+
+  const handleOpenChannelOptions = async () => {
+    setIsChatOpen(false);
+    setShowChannelOptions(true);
+    await fetchWaGatewayStatus();
+  };
+
+  const handleOpenWebChat = () => {
+    setShowChannelOptions(false);
+    setIsChatOpen(true);
+  };
+
+  const handleOpenWhatsAppBot = () => {
+    if (!isWhatsAppBotAvailable) return;
+
+    const text = encodeURIComponent('Halo Sisca, saya ingin bertanya seputar layanan akademik TUS.');
+    window.open(`https://wa.me/${waBotNumber}?text=${text}`, '_blank', 'noopener,noreferrer');
+    setShowChannelOptions(false);
+  };
+
   const feedbackMeta = {
     1: { emoji: '😞', label: 'Sangat kurang' },
     2: { emoji: '🙁', label: 'Kurang' },
@@ -581,8 +681,32 @@ export default function LandingPage() {
     <div className="relative min-h-screen overflow-x-hidden bg-[#FBFCFD] font-[Figtree,ui-sans-serif,system-ui,sans-serif] text-slate-900 selection:bg-red-100 selection:text-red-900">
       <style jsx global>{`
         @import url('https://fonts.bunny.net/css?family=figtree:400,500,600,700&display=swap');
-        html { font-family: 'Figtree', ui-sans-serif, system-ui, sans-serif; }
-        body { background: #FBFCFD; }
+        html {
+          font-family: 'Figtree', ui-sans-serif, system-ui, sans-serif;
+          scroll-behavior: smooth;
+          overflow-x: hidden;
+        }
+        body {
+          background: #FBFCFD;
+          overflow-x: hidden;
+        }
+        .sisca-reveal {
+          opacity: 0;
+          transform: translate3d(0, 18px, 0);
+          transition: opacity 520ms ease-out, transform 520ms ease-out;
+        }
+        .sisca-reveal.sisca-visible {
+          opacity: 1;
+          transform: translate3d(0, 0, 0);
+        }
+        @media (prefers-reduced-motion: reduce) {
+          html { scroll-behavior: auto !important; }
+          .sisca-reveal {
+            opacity: 1;
+            transform: none;
+            transition: none;
+          }
+        }
       `}</style>
       <div className="pointer-events-none fixed inset-x-0 top-0 -z-10 h-[620px] bg-[radial-gradient(circle_at_50%_0%,rgba(227,0,15,0.075),transparent_42%),linear-gradient(180deg,#FFFFFF_0%,#FBFCFD_78%)]" />
 
@@ -633,7 +757,7 @@ export default function LandingPage() {
         <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
           <button
             type="button"
-            onClick={() => setIsChatOpen(true)}
+            onClick={handleOpenChannelOptions}
             className="inline-flex items-center gap-2 rounded-full bg-[#E3000F] px-7 py-4 text-[14px] font-semibold text-white shadow-[0_15px_35px_-18px_rgba(227,0,15,0.9)] transition-all hover:-translate-y-0.5 hover:bg-[#C0000D]"
           >
             Mulai Tanya Sisca <ArrowRight size={17} />
@@ -662,7 +786,7 @@ export default function LandingPage() {
       </section>
 
       {/* PROBLEM / SOLUTION */}
-      <section className="border-y border-slate-200/70 bg-[#F7F8FA] py-24">
+      <section className="sisca-reveal border-y border-slate-200/70 bg-[#F7F8FA] py-24">
         <div className="mx-auto grid max-w-6xl gap-8 px-5 md:grid-cols-2 md:px-6">
           <div>
             <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
@@ -682,7 +806,7 @@ export default function LandingPage() {
       </section>
 
       {/* FEATURES */}
-      <section id="fitur" className="py-24">
+      <section id="fitur" className="sisca-reveal py-24">
         <div className="mx-auto max-w-6xl px-5 md:px-6">
           <div className="mb-14 text-center">
             <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
@@ -712,7 +836,7 @@ export default function LandingPage() {
       </section>
 
       {/* INTEGRATION */}
-      <section id="integrasi" className="border-y border-slate-200/70 bg-[#F7F8FA] py-24">
+      <section id="integrasi" className="sisca-reveal border-y border-slate-200/70 bg-[#F7F8FA] py-24">
         <div className="mx-auto grid max-w-6xl items-center gap-10 px-5 md:grid-cols-2 md:px-6">
           <div>
             <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
@@ -760,7 +884,7 @@ export default function LandingPage() {
       </section>
 
       {/* HOW IT WORKS */}
-      <section id="cara-kerja" className="py-24">
+      <section id="cara-kerja" className="sisca-reveal py-24">
         <div className="mx-auto max-w-6xl px-5 md:px-6">
           <div className="mb-14 text-center">
             <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
@@ -790,7 +914,7 @@ export default function LandingPage() {
       </section>
 
       {/* ADMIN */}
-      <section className="border-y border-slate-200/70 bg-[#F7F8FA] py-24">
+      <section className="sisca-reveal border-y border-slate-200/70 bg-[#F7F8FA] py-24">
         <div className="mx-auto grid max-w-6xl items-center gap-10 px-5 md:grid-cols-2 md:px-6">
           <div className="rounded-[2rem] border border-slate-100 bg-white p-6 shadow-[0_25px_80px_-55px_rgba(15,23,42,0.5)]">
             <div className="mb-5 flex items-center justify-between">
@@ -840,7 +964,7 @@ export default function LandingPage() {
       </section>
 
       {/* FAQ */}
-      <section id="faq" className="mx-auto max-w-3xl px-5 py-24 md:px-6">
+      <section id="faq" className="sisca-reveal mx-auto max-w-3xl px-5 py-24 md:px-6">
         <div className="mb-12 text-center">
           <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
             <MessageSquare size={12} className="text-[#E3000F]" /> FAQ
@@ -874,7 +998,7 @@ export default function LandingPage() {
       </section>
 
       {/* CTA */}
-      <section className="px-5 pb-24 md:px-6">
+      <section className="sisca-reveal px-5 pb-24 md:px-6">
         <div className="mx-auto max-w-6xl rounded-[2rem] border border-slate-800 bg-[linear-gradient(135deg,#0f172a_0%,#111827_48%,#1f2937_100%)] px-6 py-14 text-center text-white shadow-[0_28px_80px_-50px_rgba(15,23,42,0.75)] md:px-10">
           <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-white/10">
             <Bot size={28} />
@@ -885,7 +1009,7 @@ export default function LandingPage() {
           </p>
           <button
             type="button"
-            onClick={() => setIsChatOpen(true)}
+            onClick={handleOpenChannelOptions}
             className="mt-8 inline-flex items-center gap-2 rounded-full bg-white px-7 py-4 text-[14px] font-semibold text-slate-900 transition-all hover:-translate-y-0.5 hover:bg-slate-100"
           >
             Buka Chat Widget <ArrowRight size={17} />
@@ -928,15 +1052,68 @@ export default function LandingPage() {
 
       {/* FLOATING CHAT BUTTON */}
       {!isChatOpen && (
-        <button
-          type="button"
-          onClick={() => setIsChatOpen(true)}
-          className="fixed bottom-6 right-5 z-40 flex items-center gap-3 rounded-full bg-[#E3000F] px-5 py-4 text-white shadow-[0_22px_55px_-20px_rgba(227,0,15,0.9)] transition-all hover:-translate-y-1 hover:bg-[#C0000D] md:right-8"
-          aria-label="Buka chat Sisca"
-        >
-          <MessageSquare size={21} />
-          <span className="hidden text-[13px] font-semibold sm:inline">Tanya Sisca</span>
-        </button>
+        <div className="fixed bottom-6 right-5 z-40 flex flex-col items-end gap-3 md:right-8">
+          {showChannelOptions && (
+            <div className="flex w-[230px] flex-col gap-2 rounded-2xl border border-slate-200 bg-white p-3 shadow-[0_22px_55px_-25px_rgba(15,23,42,0.35)]">
+              <button
+                type="button"
+                onClick={handleOpenWebChat}
+                className="flex w-full items-center gap-3 rounded-xl bg-slate-900 px-4 py-3 text-left text-white transition-all hover:bg-slate-700"
+              >
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-white/10">
+                  <MessageSquare size={18} />
+                </div>
+                <div>
+                  <p className="text-[13px] font-semibold">Chat Web</p>
+                  <p className="text-[11px] font-medium text-slate-300">Tanya langsung di website</p>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleOpenWhatsAppBot}
+                disabled={!isWhatsAppBotAvailable || isCheckingWaStatus}
+                className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition-all ${
+                  isWhatsAppBotAvailable
+                    ? 'bg-[#E3000F] text-white hover:bg-[#C0000D]'
+                    : 'cursor-not-allowed bg-slate-100 text-slate-400'
+                }`}
+              >
+                <div
+                  className={`flex h-9 w-9 items-center justify-center rounded-lg ${
+                    isWhatsAppBotAvailable ? 'bg-white/10' : 'bg-white'
+                  }`}
+                >
+                  <Smartphone size={18} />
+                </div>
+                <div>
+                  <p className="text-[13px] font-semibold">WhatsApp Bot</p>
+                  <p
+                    className={`text-[11px] font-medium ${
+                      isWhatsAppBotAvailable ? 'text-red-100' : 'text-slate-400'
+                    }`}
+                  >
+                    {isCheckingWaStatus
+                      ? 'Mengecek koneksi...'
+                      : isWhatsAppBotAvailable
+                        ? `Terhubung ke ${waBotNumber}`
+                        : 'Bot belum terhubung'}
+                  </p>
+                </div>
+              </button>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={handleToggleChannelOptions}
+            className="flex items-center gap-3 rounded-full bg-[#E3000F] px-5 py-4 text-white shadow-[0_22px_55px_-20px_rgba(227,0,15,0.9)] transition-all hover:-translate-y-1 hover:bg-[#C0000D]"
+            aria-label="Buka pilihan layanan Sisca"
+          >
+            <MessageSquare size={21} />
+            <span className="hidden text-[13px] font-semibold sm:inline">Tanya Sisca</span>
+          </button>
+        </div>
       )}
 
       {/* CHAT WIDGET */}

@@ -25,10 +25,15 @@ type KnowledgeDoc = {
     created_at: string;
 };
 
-type ConfirmAction = {
-    type: 'toggle' | 'delete';
-    doc: KnowledgeDoc;
-} | null;
+type ConfirmAction =
+    | {
+        type: 'toggle' | 'deleteOptions' | 'deleteChunk' | 'deleteFile';
+        doc: KnowledgeDoc;
+    }
+    | {
+        type: 'deleteAll';
+    }
+    | null;
 
 export default function KnowledgeBasePage() {
     const [file, setFile] = useState<File | null>(null);
@@ -129,7 +134,7 @@ export default function KnowledgeBasePage() {
     };
 
     const handleConfirmAction = async () => {
-        if (!confirmAction) return;
+        if (!confirmAction || confirmAction.type === 'deleteOptions') return;
 
         setIsActionLoading(true);
 
@@ -149,7 +154,7 @@ export default function KnowledgeBasePage() {
                 });
             }
 
-            if (confirmAction.type === 'delete') {
+            if (confirmAction.type === 'deleteChunk') {
                 const { error } = await supabase
                     .from('knowledge_base')
                     .delete()
@@ -159,11 +164,40 @@ export default function KnowledgeBasePage() {
 
                 setStatus({
                     type: 'success',
-                    message: 'Document chunk has been deleted from knowledge base.',
+                    message: 'Selected chunk has been deleted from knowledge base.',
+                });
+            }
+
+            if (confirmAction.type === 'deleteFile') {
+                const { error } = await supabase
+                    .from('knowledge_base')
+                    .delete()
+                    .eq('file_name', confirmAction.doc.file_name);
+
+                if (error) throw error;
+
+                setStatus({
+                    type: 'success',
+                    message: 'All chunks from the selected file have been deleted from knowledge base.',
+                });
+            }
+
+            if (confirmAction.type === 'deleteAll') {
+                const { error } = await supabase
+                    .from('knowledge_base')
+                    .delete()
+                    .neq('id', '00000000-0000-0000-0000-000000000000');
+
+                if (error) throw error;
+
+                setStatus({
+                    type: 'success',
+                    message: 'All knowledge base data has been deleted.',
                 });
             }
 
             setConfirmAction(null);
+            setExpandedDocId(null);
             await fetchDocuments();
         } catch (error: any) {
             setStatus({
@@ -212,14 +246,26 @@ export default function KnowledgeBasePage() {
                     </p>
                 </div>
 
-                <button
-                    type="button"
-                    onClick={fetchDocuments}
-                    className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-[13px] font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50"
-                >
-                    <RefreshCw size={15} className={isFetching ? 'animate-spin' : ''} />
-                    Refresh
-                </button>
+                <div className="flex items-center gap-2">
+                    <button
+                        type="button"
+                        onClick={() => setConfirmAction({ type: 'deleteAll' })}
+                        disabled={isFetching || documents.length === 0}
+                        className="inline-flex items-center gap-2 rounded-full border border-red-100 bg-white px-4 py-2 text-[13px] font-semibold text-red-600 shadow-sm transition hover:bg-red-50 disabled:cursor-not-allowed disabled:border-slate-100 disabled:text-slate-300 disabled:hover:bg-white"
+                    >
+                        <Trash2 size={15} />
+                        Delete All
+                    </button>
+
+                    <button
+                        type="button"
+                        onClick={fetchDocuments}
+                        className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-[13px] font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50"
+                    >
+                        <RefreshCw size={15} className={isFetching ? 'animate-spin' : ''} />
+                        Refresh
+                    </button>
+                </div>
             </div>
 
             <section className="rounded-[1.4rem] border border-slate-200 bg-white p-7 shadow-[0_20px_65px_-55px_rgba(15,23,42,0.65)]">
@@ -404,7 +450,7 @@ export default function KnowledgeBasePage() {
                                                         type="button"
                                                         onClick={(e) => {
                                                             e.stopPropagation();
-                                                            setConfirmAction({ type: 'delete', doc });
+                                                            setConfirmAction({ type: 'deleteOptions', doc });
                                                         }}
                                                         className="rounded-lg border border-red-100 px-3 py-2 text-red-600 transition hover:bg-red-50"
                                                     >
@@ -460,69 +506,169 @@ export default function KnowledgeBasePage() {
             {confirmAction && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4 backdrop-blur-[2px]">
                     <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-[0_28px_90px_-40px_rgba(15,23,42,0.8)]">
-                        <div className="mb-5 flex items-start justify-between gap-4">
-                            <div>
-                                <h3 className="text-lg font-semibold tracking-tight text-slate-950">
-                                    {confirmAction.type === 'delete'
-                                        ? 'Delete Knowledge Item'
-                                        : confirmAction.doc.is_active
-                                            ? 'Disable Knowledge Item'
-                                            : 'Enable Knowledge Item'}
-                                </h3>
+                        {confirmAction.type === 'deleteOptions' ? (
+                            <>
+                                <div className="mb-5 flex items-start justify-between gap-4">
+                                    <div>
+                                        <h3 className="text-lg font-semibold tracking-tight text-slate-950">
+                                            Delete Knowledge Item
+                                        </h3>
 
-                                <p className="mt-1 text-sm font-medium leading-6 text-slate-500">
-                                    {confirmAction.type === 'delete'
-                                        ? 'This action will permanently remove the selected content from Sisca knowledge base.'
-                                        : `This action will mark the selected content as ${confirmAction.doc.is_active ? 'inactive' : 'active'
-                                        } for Sisca RAG responses.`}
-                                </p>
-                            </div>
+                                        <p className="mt-1 text-sm font-medium leading-6 text-slate-500">
+                                            Choose whether to delete only this chunk or delete all chunks from the same file.
+                                        </p>
+                                    </div>
 
-                            <button
-                                type="button"
-                                onClick={() => setConfirmAction(null)}
-                                className="rounded-full p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
-                            >
-                                <X size={18} />
-                            </button>
-                        </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setConfirmAction(null)}
+                                        className="rounded-full p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                                    >
+                                        <X size={18} />
+                                    </button>
+                                </div>
 
-                        <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
-                            <p className="truncate text-sm font-semibold text-slate-900">
-                                {confirmAction.doc.file_name}
-                            </p>
-                            <p className="mt-1 text-[12px] font-medium text-slate-500">
-                                {getChunkLabel(confirmAction.doc)}
-                            </p>
-                        </div>
+                                <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                                    <p className="truncate text-sm font-semibold text-slate-900">
+                                        {confirmAction.doc.file_name}
+                                    </p>
+                                    <p className="mt-1 text-[12px] font-medium text-slate-500">
+                                        {getChunkLabel(confirmAction.doc)}
+                                    </p>
+                                </div>
 
-                        <div className="flex justify-end gap-2">
-                            <button
-                                type="button"
-                                disabled={isActionLoading}
-                                onClick={() => setConfirmAction(null)}
-                                className="rounded-xl px-4 py-2.5 text-[13px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                            >
-                                Cancel
-                            </button>
+                                <div className="grid gap-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setConfirmAction({ type: 'deleteChunk', doc: confirmAction.doc })}
+                                        className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-left transition hover:bg-slate-50"
+                                    >
+                                        <p className="text-[13px] font-semibold text-slate-900">
+                                            Delete this chunk only
+                                        </p>
+                                        <p className="mt-1 text-[12px] font-medium leading-5 text-slate-500">
+                                            Remove only the selected chunk from the knowledge base.
+                                        </p>
+                                    </button>
 
-                            <button
-                                type="button"
-                                disabled={isActionLoading}
-                                onClick={handleConfirmAction}
-                                className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-[13px] font-semibold text-white transition disabled:bg-slate-300 ${confirmAction.type === 'delete'
-                                        ? 'bg-[#E3000F] hover:bg-[#C0000D]'
-                                        : 'bg-slate-900 hover:bg-slate-700'
-                                    }`}
-                            >
-                                {isActionLoading && <Loader2 size={15} className="animate-spin" />}
-                                {confirmAction.type === 'delete'
-                                    ? 'Delete'
-                                    : confirmAction.doc.is_active
-                                        ? 'Disable'
-                                        : 'Enable'}
-                            </button>
-                        </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setConfirmAction({ type: 'deleteFile', doc: confirmAction.doc })}
+                                        className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-left transition hover:bg-red-100"
+                                    >
+                                        <p className="text-[13px] font-semibold text-red-700">
+                                            Delete entire file
+                                        </p>
+                                        <p className="mt-1 text-[12px] font-medium leading-5 text-red-600/80">
+                                            Remove all chunks with this file name from the knowledge base.
+                                        </p>
+                                    </button>
+                                </div>
+
+                                <div className="mt-5 flex justify-end">
+                                    <button
+                                        type="button"
+                                        onClick={() => setConfirmAction(null)}
+                                        className="rounded-xl px-4 py-2.5 text-[13px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <div className="mb-5 flex items-start justify-between gap-4">
+                                    <div>
+                                        <h3 className="text-lg font-semibold tracking-tight text-slate-950">
+                                            {confirmAction.type === 'deleteAll'
+                                                ? 'Delete All Knowledge Base'
+                                                : confirmAction.type === 'deleteFile'
+                                                    ? 'Delete Entire File'
+                                                    : confirmAction.type === 'deleteChunk'
+                                                        ? 'Delete Knowledge Chunk'
+                                                        : confirmAction.doc.is_active
+                                                            ? 'Disable Knowledge Item'
+                                                            : 'Enable Knowledge Item'}
+                                        </h3>
+
+                                        <p className="mt-1 text-sm font-medium leading-6 text-slate-500">
+                                            {confirmAction.type === 'deleteAll'
+                                                ? 'This action will permanently remove all data from Sisca knowledge base.'
+                                                : confirmAction.type === 'deleteFile'
+                                                    ? 'This action will permanently remove all chunks from the selected file.'
+                                                    : confirmAction.type === 'deleteChunk'
+                                                        ? 'This action will permanently remove only the selected chunk from Sisca knowledge base.'
+                                                        : `This action will mark the selected content as ${confirmAction.doc.is_active ? 'inactive' : 'active'
+                                                        } for Sisca RAG responses.`}
+                                        </p>
+                                    </div>
+
+                                    <button
+                                        type="button"
+                                        onClick={() => setConfirmAction(null)}
+                                        className="rounded-full p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                                    >
+                                        <X size={18} />
+                                    </button>
+                                </div>
+
+                                <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                                    {confirmAction.type === 'deleteAll' ? (
+                                        <>
+                                            <p className="text-sm font-semibold text-slate-900">
+                                                All knowledge base data
+                                            </p>
+                                            <p className="mt-1 text-[12px] font-medium text-slate-500">
+                                                {documents.length} chunk(s) will be removed.
+                                            </p>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <p className="truncate text-sm font-semibold text-slate-900">
+                                                {confirmAction.doc.file_name}
+                                            </p>
+                                            <p className="mt-1 text-[12px] font-medium text-slate-500">
+                                                {confirmAction.type === 'deleteFile'
+                                                    ? 'All chunks from this file'
+                                                    : getChunkLabel(confirmAction.doc)}
+                                            </p>
+                                        </>
+                                    )}
+                                </div>
+
+                                <div className="flex justify-end gap-2">
+                                    <button
+                                        type="button"
+                                        disabled={isActionLoading}
+                                        onClick={() => setConfirmAction(null)}
+                                        className="rounded-xl px-4 py-2.5 text-[13px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                                    >
+                                        Cancel
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        disabled={isActionLoading}
+                                        onClick={handleConfirmAction}
+                                        className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-[13px] font-semibold text-white transition disabled:bg-slate-300 ${confirmAction.type === 'deleteChunk' || confirmAction.type === 'deleteFile' || confirmAction.type === 'deleteAll'
+                                                ? 'bg-[#E3000F] hover:bg-[#C0000D]'
+                                                : 'bg-slate-900 hover:bg-slate-700'
+                                            }`}
+                                    >
+                                        {isActionLoading && <Loader2 size={15} className="animate-spin" />}
+                                        {confirmAction.type === 'deleteAll'
+                                            ? 'Delete All'
+                                            : confirmAction.type === 'deleteFile'
+                                                ? 'Delete File'
+                                                : confirmAction.type === 'deleteChunk'
+                                                    ? 'Delete Chunk'
+                                                    : confirmAction.doc.is_active
+                                                        ? 'Disable'
+                                                        : 'Enable'}
+                                    </button>
+                                </div>
+                            </>
+                        )}
                     </div>
                 </div>
             )}

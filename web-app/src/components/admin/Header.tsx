@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
-import { CalendarDays, CircleUserRound, Search } from 'lucide-react';
+import { CalendarDays, CircleUserRound } from 'lucide-react';
 
 export default function Header() {
     const [email, setEmail] = useState('Admin SSC');
@@ -32,9 +32,6 @@ export default function Header() {
             </div>
 
             <div className="flex items-center gap-3">
-                <div className="hidden items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-[13px] font-medium text-slate-500 lg:flex">
-                    <Search size={15} /> Search module
-                </div>
                 <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-[13px] font-semibold text-slate-700">
                     <CalendarDays size={16} className="text-slate-400" /> {time || '--:--'}
                 </div>
