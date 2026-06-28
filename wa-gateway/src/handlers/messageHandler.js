@@ -9,6 +9,9 @@ const {
     resetWaSession,
 } = require('../services/sessionService');
 
+const WEB_APP_BASE_URL =
+    process.env.WEB_APP_BASE_URL || 'https://ai-ssc-project.vercel.app';
+
 function getMessageText(message) {
     return (
         message.message?.conversation ||
@@ -102,6 +105,118 @@ function withActionFooter(reply) {
 
 Untuk membuat laporan, ketik: *.lapor*
 Untuk mengakhiri sesi, ketik: *selesai*`;
+}
+
+function normalizeBaseUrl(url) {
+    return String(url || '')
+        .trim()
+        .replace(/\/+$/, '');
+}
+
+function removePlainSourceSection(text) {
+    return String(text || '')
+        .replace(/\n*Sumber referensi:\s*[\s\S]*$/i, '')
+        .trim();
+}
+
+function getSourceFileName(source) {
+    if (typeof source === 'string') {
+        return source;
+    }
+
+    return (
+        source?.file_name ||
+        source?.fileName ||
+        source?.name ||
+        'Dokumen referensi'
+    );
+}
+
+function getSourceDownloadUrl(source) {
+    if (!source || typeof source !== 'object') {
+        return null;
+    }
+
+    if (source.download_url) {
+        return source.download_url;
+    }
+
+    if (source.downloadUrl) {
+        return source.downloadUrl;
+    }
+
+    if (source.document_id) {
+        return `/api/knowledge/download?id=${source.document_id}`;
+    }
+
+    if (source.documentId) {
+        return `/api/knowledge/download?id=${source.documentId}`;
+    }
+
+    return null;
+}
+
+function toAbsoluteDownloadUrl(downloadUrl) {
+    if (!downloadUrl) return null;
+
+    const value = String(downloadUrl).trim();
+
+    if (!value) return null;
+
+    if (value.startsWith('http://') || value.startsWith('https://')) {
+        return value;
+    }
+
+    const baseUrl = normalizeBaseUrl(WEB_APP_BASE_URL);
+    const path = value.startsWith('/') ? value : `/${value}`;
+
+    return `${baseUrl}${path}`;
+}
+
+function buildDownloadSourceText(sources = []) {
+    if (!Array.isArray(sources) || sources.length === 0) {
+        return '';
+    }
+
+    const uniqueSources = [];
+    const sourceKeys = new Set();
+
+    for (const source of sources) {
+        const fileName = getSourceFileName(source);
+        const downloadUrl = getSourceDownloadUrl(source);
+        const key = `${fileName}-${downloadUrl || 'no-download'}`;
+
+        if (sourceKeys.has(key)) continue;
+
+        sourceKeys.add(key);
+        uniqueSources.push(source);
+    }
+
+    if (uniqueSources.length === 0) {
+        return '';
+    }
+
+    const sourceText = uniqueSources
+        .map((source, index) => {
+            const fileName = getSourceFileName(source);
+            const downloadUrl = toAbsoluteDownloadUrl(getSourceDownloadUrl(source));
+
+            if (!downloadUrl) {
+                return `${index + 1}. ${fileName}\nLink unduh belum tersedia.`;
+            }
+
+            return `${index + 1}. ${fileName}\nUnduh: ${downloadUrl}`;
+        })
+        .join('\n\n');
+
+    return `\n\nReferensi dokumen:\n${sourceText}`;
+}
+
+function buildRagWhatsAppReply(reply, sources = []) {
+    const cleanReply = removePlainSourceSection(reply);
+    const sourceText = buildDownloadSourceText(sources);
+
+    return `${cleanReply}${sourceText}`;
 }
 
 async function sendReply(sock, remoteJid, reply, originalMessage, quoteReply) {
@@ -382,7 +497,12 @@ async function handleIncomingMessage(sock, message) {
             lastWaJid: waJid,
         });
 
-        const finalReply = withActionFooter(result.reply);
+        const ragReplyWithDownloadSources = buildRagWhatsAppReply(
+            result.reply,
+            result.sources
+        );
+
+        const finalReply = withActionFooter(ragReplyWithDownloadSources);
 
         console.log(
             `[WA][RAG] Response received: ${finalReply.slice(0, 400)}${finalReply.length > 400 ? '...' : ''}`
