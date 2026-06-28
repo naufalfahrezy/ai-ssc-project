@@ -6,6 +6,7 @@ import {
     AlertCircle,
     CheckCircle2,
     ChevronDown,
+    Download,
     FileText,
     Loader2,
     RefreshCw,
@@ -17,12 +18,25 @@ import {
 
 type KnowledgeDoc = {
     id: string;
+    document_id: string | null;
     file_name: string;
     file_url: string | null;
     content: string;
     is_active: boolean | null;
     metadata: any;
     created_at: string;
+};
+
+type GroupedKnowledgeDoc = {
+    file_name: string;
+    document_id: string | null;
+    chunks: KnowledgeDoc[];
+    total_chunks: number;
+    active_chunks: number;
+    inactive_chunks: number;
+    is_active: boolean;
+    created_at: string;
+    first_chunk: KnowledgeDoc;
 };
 
 type ConfirmAction =
@@ -38,7 +52,7 @@ type ConfirmAction =
 export default function KnowledgeBasePage() {
     const [file, setFile] = useState<File | null>(null);
     const [documents, setDocuments] = useState<KnowledgeDoc[]>([]);
-    const [expandedDocId, setExpandedDocId] = useState<string | null>(null);
+    const [expandedFileName, setExpandedFileName] = useState<string | null>(null);
     const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
 
     const [searchQuery, setSearchQuery] = useState('');
@@ -56,7 +70,7 @@ export default function KnowledgeBasePage() {
 
         const { data, error } = await supabase
             .from('knowledge_base')
-            .select('id,file_name,file_url,content,is_active,metadata,created_at')
+            .select('id,document_id,file_name,file_url,content,is_active,metadata,created_at')
             .order('created_at', { ascending: false });
 
         if (error) {
@@ -93,6 +107,56 @@ export default function KnowledgeBasePage() {
             );
         });
     }, [documents, searchQuery]);
+
+    const groupedDocuments = useMemo<GroupedKnowledgeDoc[]>(() => {
+        const map = new Map<string, KnowledgeDoc[]>();
+
+        filteredDocuments.forEach((doc) => {
+            const key = doc.file_name || 'Untitled Document';
+            const current = map.get(key) || [];
+            current.push(doc);
+            map.set(key, current);
+        });
+
+        return Array.from(map.entries())
+            .map(([fileName, chunks]) => {
+                const sortedChunks = [...chunks].sort((a, b) => {
+                    const chunkA =
+                        typeof a.metadata?.chunk_index === 'number'
+                            ? a.metadata.chunk_index
+                            : 0;
+                    const chunkB =
+                        typeof b.metadata?.chunk_index === 'number'
+                            ? b.metadata.chunk_index
+                            : 0;
+
+                    return chunkA - chunkB;
+                });
+
+                const firstChunk = sortedChunks[0];
+                const activeChunks = sortedChunks.filter((chunk) => chunk.is_active).length;
+                const inactiveChunks = sortedChunks.length - activeChunks;
+
+                return {
+                    file_name: fileName,
+                    document_id:
+                        firstChunk?.document_id ||
+                        sortedChunks.find((chunk) => chunk.document_id)?.document_id ||
+                        null,
+                    chunks: sortedChunks,
+                    total_chunks: sortedChunks.length,
+                    active_chunks: activeChunks,
+                    inactive_chunks: inactiveChunks,
+                    is_active: activeChunks > 0,
+                    created_at: firstChunk?.created_at || new Date().toISOString(),
+                    first_chunk: firstChunk,
+                };
+            })
+            .sort(
+                (a, b) =>
+                    new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+            );
+    }, [filteredDocuments]);
 
     const handleUpload = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -143,14 +207,15 @@ export default function KnowledgeBasePage() {
                 const { error } = await supabase
                     .from('knowledge_base')
                     .update({ is_active: !confirmAction.doc.is_active })
-                    .eq('id', confirmAction.doc.id);
+                    .eq('file_name', confirmAction.doc.file_name);
 
                 if (error) throw error;
 
                 setStatus({
                     type: 'success',
-                    message: `Document has been ${confirmAction.doc.is_active ? 'disabled' : 'enabled'
-                        }.`,
+                    message: `Document has been ${
+                        confirmAction.doc.is_active ? 'disabled' : 'enabled'
+                    }.`,
                 });
             }
 
@@ -197,7 +262,7 @@ export default function KnowledgeBasePage() {
             }
 
             setConfirmAction(null);
-            setExpandedDocId(null);
+            setExpandedFileName(null);
             await fetchDocuments();
         } catch (error: any) {
             setStatus({
@@ -232,6 +297,11 @@ export default function KnowledgeBasePage() {
         }
 
         return 'Document Chunk';
+    };
+
+    const getFilePreview = (group: GroupedKnowledgeDoc) => {
+        const firstContent = group.chunks.find((chunk) => chunk.content)?.content || '';
+        return getContentPreview(firstContent);
     };
 
     return (
@@ -272,10 +342,11 @@ export default function KnowledgeBasePage() {
                 <form onSubmit={handleUpload}>
                     <div className="group relative">
                         <div
-                            className={`flex flex-col items-center justify-center rounded-[1.3rem] border border-dashed p-10 transition-all ${file
+                            className={`flex flex-col items-center justify-center rounded-[1.3rem] border border-dashed p-10 transition-all ${
+                                file
                                     ? 'border-[#E3000F] bg-red-50/20'
                                     : 'border-slate-300 bg-slate-50/70 group-hover:border-[#E3000F] group-hover:bg-red-50/10'
-                                }`}
+                            }`}
                         >
                             <input
                                 type="file"
@@ -288,10 +359,11 @@ export default function KnowledgeBasePage() {
                             />
 
                             <div
-                                className={`mb-4 rounded-2xl p-3 ${file
+                                className={`mb-4 rounded-2xl p-3 ${
+                                    file
                                         ? 'bg-red-100 text-[#E3000F]'
                                         : 'bg-white text-slate-400 shadow-sm ring-1 ring-slate-200 group-hover:text-[#E3000F]'
-                                    }`}
+                                }`}
                             >
                                 {file ? <FileText size={25} /> : <UploadCloud size={25} />}
                             </div>
@@ -308,10 +380,11 @@ export default function KnowledgeBasePage() {
 
                     {status.type !== 'idle' && (
                         <div
-                            className={`mt-5 flex items-start gap-3 rounded-2xl p-4 text-sm font-medium ${status.type === 'success'
+                            className={`mt-5 flex items-start gap-3 rounded-2xl p-4 text-sm font-medium ${
+                                status.type === 'success'
                                     ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-500/20'
                                     : 'bg-red-50 text-red-800 ring-1 ring-red-500/20'
-                                }`}
+                            }`}
                         >
                             {status.type === 'success' ? (
                                 <CheckCircle2 size={18} className="mt-0.5 shrink-0" />
@@ -367,6 +440,7 @@ export default function KnowledgeBasePage() {
                             <tr>
                                 <th className="px-6 py-3">Document</th>
                                 <th className="px-6 py-3">Content Preview</th>
+                                <th className="px-6 py-3">Chunks</th>
                                 <th className="px-6 py-3">Status</th>
                                 <th className="px-6 py-3">Created</th>
                                 <th className="px-6 py-3 text-right">Actions</th>
@@ -376,24 +450,26 @@ export default function KnowledgeBasePage() {
                         <tbody className="divide-y divide-slate-100">
                             {isFetching ? (
                                 <tr>
-                                    <td colSpan={5} className="p-8 text-center font-medium text-slate-400">
+                                    <td colSpan={6} className="p-8 text-center font-medium text-slate-400">
                                         Loading documents...
                                     </td>
                                 </tr>
-                            ) : filteredDocuments.length === 0 ? (
+                            ) : groupedDocuments.length === 0 ? (
                                 <tr>
-                                    <td colSpan={5} className="p-8 text-center font-medium text-slate-400">
+                                    <td colSpan={6} className="p-8 text-center font-medium text-slate-400">
                                         No documents found.
                                     </td>
                                 </tr>
                             ) : (
-                                filteredDocuments.map((doc) => {
-                                    const isExpanded = expandedDocId === doc.id;
+                                groupedDocuments.map((group) => {
+                                    const isExpanded = expandedFileName === group.file_name;
 
                                     return (
-                                        <Fragment key={doc.id}>
+                                        <Fragment key={group.file_name}>
                                             <tr
-                                                onClick={() => setExpandedDocId(isExpanded ? null : doc.id)}
+                                                onClick={() =>
+                                                    setExpandedFileName(isExpanded ? null : group.file_name)
+                                                }
                                                 className="cursor-pointer transition hover:bg-slate-50/80"
                                             >
                                                 <td className="px-6 py-4 align-top">
@@ -403,11 +479,11 @@ export default function KnowledgeBasePage() {
                                                         </div>
 
                                                         <div className="min-w-0">
-                                                            <div className="max-w-[260px] truncate font-semibold text-slate-900">
-                                                                {doc.file_name}
+                                                            <div className="max-w-[280px] truncate font-semibold text-slate-900">
+                                                                {group.file_name}
                                                             </div>
                                                             <div className="mt-0.5 text-[12px] font-medium text-slate-400">
-                                                                {getChunkLabel(doc)}
+                                                                Click to view chunk details
                                                             </div>
                                                         </div>
                                                     </div>
@@ -415,42 +491,81 @@ export default function KnowledgeBasePage() {
 
                                                 <td className="max-w-[420px] px-6 py-4 align-top">
                                                     <p className="line-clamp-2 text-[13px] font-medium leading-6 text-slate-500">
-                                                        {getContentPreview(doc.content)}
+                                                        {getFilePreview(group)}
                                                     </p>
                                                 </td>
 
                                                 <td className="px-6 py-4 align-top">
+                                                    <div className="inline-flex items-center gap-2 rounded-full bg-slate-50 px-3 py-1 text-[12px] font-semibold text-slate-600 ring-1 ring-slate-100">
+                                                        {group.total_chunks} chunk
+                                                    </div>
+                                                </td>
+
+                                                <td className="px-6 py-4 align-top">
                                                     <span
-                                                        className={`rounded-full px-3 py-1 text-[11px] font-semibold ${doc.is_active
+                                                        className={`rounded-full px-3 py-1 text-[11px] font-semibold ${
+                                                            group.is_active
                                                                 ? 'bg-emerald-50 text-emerald-700'
                                                                 : 'bg-slate-100 text-slate-500'
-                                                            }`}
+                                                        }`}
                                                     >
-                                                        {doc.is_active ? 'Active' : 'Inactive'}
+                                                        {group.is_active ? 'Active' : 'Inactive'}
                                                     </span>
                                                 </td>
 
                                                 <td className="px-6 py-4 align-top text-[13px] font-medium text-slate-500">
-                                                    {formatDate(doc.created_at)}
+                                                    {formatDate(group.created_at)}
                                                 </td>
 
                                                 <td className="px-6 py-4 text-right align-top">
+                                                    {group.document_id ? (
+                                                        <a
+                                                            href={`/api/knowledge/download?id=${group.document_id}`}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            onClick={(e) => e.stopPropagation()}
+                                                            className="mr-2 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-[12px] font-semibold text-slate-600 transition hover:bg-slate-50"
+                                                        >
+                                                            <Download size={14} />
+                                                            Download
+                                                        </a>
+                                                    ) : (
+                                                        <button
+                                                            type="button"
+                                                            disabled
+                                                            onClick={(e) => e.stopPropagation()}
+                                                            className="mr-2 inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-slate-100 px-3 py-2 text-[12px] font-semibold text-slate-300"
+                                                        >
+                                                            <Download size={14} />
+                                                            Download
+                                                        </button>
+                                                    )}
+
                                                     <button
                                                         type="button"
                                                         onClick={(e) => {
                                                             e.stopPropagation();
-                                                            setConfirmAction({ type: 'toggle', doc });
+                                                            setConfirmAction({
+                                                                type: 'toggle',
+                                                                doc: {
+                                                                    ...group.first_chunk,
+                                                                    is_active: group.is_active,
+                                                                },
+                                                            });
                                                         }}
                                                         className="mr-2 rounded-lg border border-slate-200 px-3 py-2 text-[12px] font-semibold text-slate-600 transition hover:bg-slate-50"
                                                     >
-                                                        {doc.is_active ? 'Disable' : 'Enable'}
+                                                        {group.is_active ? 'Disable' : 'Enable'}
                                                     </button>
 
                                                     <button
                                                         type="button"
                                                         onClick={(e) => {
                                                             e.stopPropagation();
-                                                            setConfirmAction({ type: 'deleteOptions', doc });
+                                                            setConfirmAction({
+                                                                type: 'deleteOptions',
+                                                                doc: group.first_chunk,
+                                                            });
                                                         }}
                                                         className="rounded-lg border border-red-100 px-3 py-2 text-red-600 transition hover:bg-red-50"
                                                     >
@@ -461,15 +576,15 @@ export default function KnowledgeBasePage() {
 
                                             {isExpanded && (
                                                 <tr className="bg-slate-50/70">
-                                                    <td colSpan={5} className="px-6 pb-6 pt-0">
+                                                    <td colSpan={6} className="px-6 pb-6 pt-0">
                                                         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                                                            <div className="mb-3 flex items-center justify-between gap-3">
+                                                            <div className="mb-4 flex items-center justify-between gap-3">
                                                                 <div>
                                                                     <h4 className="text-sm font-semibold text-slate-900">
-                                                                        Full Content
+                                                                        Chunk Details
                                                                     </h4>
                                                                     <p className="text-[12px] font-medium text-slate-400">
-                                                                        {doc.file_name} • {getChunkLabel(doc)}
+                                                                        {group.file_name} • {group.total_chunks} chunk(s)
                                                                     </p>
                                                                 </div>
 
@@ -477,7 +592,7 @@ export default function KnowledgeBasePage() {
                                                                     type="button"
                                                                     onClick={(e) => {
                                                                         e.stopPropagation();
-                                                                        setExpandedDocId(null);
+                                                                        setExpandedFileName(null);
                                                                     }}
                                                                     className="rounded-full p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
                                                                 >
@@ -485,10 +600,60 @@ export default function KnowledgeBasePage() {
                                                                 </button>
                                                             </div>
 
-                                                            <div className="max-h-[360px] overflow-y-auto rounded-xl bg-slate-50 p-4">
-                                                                <pre className="whitespace-pre-wrap break-words font-sans text-[13px] font-medium leading-7 text-slate-700">
-                                                                    {doc.content || 'No content available.'}
-                                                                </pre>
+                                                            <div className="space-y-3">
+                                                                {group.chunks.map((chunk) => (
+                                                                    <div
+                                                                        key={chunk.id}
+                                                                        className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4"
+                                                                    >
+                                                                        <div className="mb-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                                                                            <div>
+                                                                                <div className="flex flex-wrap items-center gap-2">
+                                                                                    <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-slate-600 ring-1 ring-slate-200">
+                                                                                        {getChunkLabel(chunk)}
+                                                                                    </span>
+
+                                                                                    <span
+                                                                                        className={`rounded-full px-3 py-1 text-[11px] font-semibold ${
+                                                                                            chunk.is_active
+                                                                                                ? 'bg-emerald-50 text-emerald-700'
+                                                                                                : 'bg-slate-100 text-slate-500'
+                                                                                        }`}
+                                                                                    >
+                                                                                        {chunk.is_active ? 'Active' : 'Inactive'}
+                                                                                    </span>
+                                                                                </div>
+
+                                                                                <p className="mt-2 text-[12px] font-medium text-slate-400">
+                                                                                    Created {formatDate(chunk.created_at)}
+                                                                                </p>
+                                                                            </div>
+
+                                                                            <div className="flex items-center gap-2">
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={(e) => {
+                                                                                        e.stopPropagation();
+                                                                                        setConfirmAction({
+                                                                                            type: 'deleteChunk',
+                                                                                            doc: chunk,
+                                                                                        });
+                                                                                    }}
+                                                                                    className="inline-flex items-center gap-1.5 rounded-lg border border-red-100 bg-white px-3 py-2 text-[12px] font-semibold text-red-600 transition hover:bg-red-50"
+                                                                                >
+                                                                                    <Trash2 size={13} />
+                                                                                    Delete Chunk
+                                                                                </button>
+                                                                            </div>
+                                                                        </div>
+
+                                                                        <div className="max-h-[260px] overflow-y-auto rounded-xl bg-white p-4 ring-1 ring-slate-100">
+                                                                            <pre className="whitespace-pre-wrap break-words font-sans text-[13px] font-medium leading-7 text-slate-700">
+                                                                                {chunk.content || 'No content available.'}
+                                                                            </pre>
+                                                                        </div>
+                                                                    </div>
+                                                                ))}
                                                             </div>
                                                         </div>
                                                     </td>
@@ -515,7 +680,7 @@ export default function KnowledgeBasePage() {
                                         </h3>
 
                                         <p className="mt-1 text-sm font-medium leading-6 text-slate-500">
-                                            Choose whether to delete only this chunk or delete all chunks from the same file.
+                                            Choose whether to delete only a selected chunk from detail view or delete all chunks from this file.
                                         </p>
                                     </div>
 
@@ -533,27 +698,19 @@ export default function KnowledgeBasePage() {
                                         {confirmAction.doc.file_name}
                                     </p>
                                     <p className="mt-1 text-[12px] font-medium text-slate-500">
-                                        {getChunkLabel(confirmAction.doc)}
+                                        File document
                                     </p>
                                 </div>
 
                                 <div className="grid gap-3">
                                     <button
                                         type="button"
-                                        onClick={() => setConfirmAction({ type: 'deleteChunk', doc: confirmAction.doc })}
-                                        className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-left transition hover:bg-slate-50"
-                                    >
-                                        <p className="text-[13px] font-semibold text-slate-900">
-                                            Delete this chunk only
-                                        </p>
-                                        <p className="mt-1 text-[12px] font-medium leading-5 text-slate-500">
-                                            Remove only the selected chunk from the knowledge base.
-                                        </p>
-                                    </button>
-
-                                    <button
-                                        type="button"
-                                        onClick={() => setConfirmAction({ type: 'deleteFile', doc: confirmAction.doc })}
+                                        onClick={() =>
+                                            setConfirmAction({
+                                                type: 'deleteFile',
+                                                doc: confirmAction.doc,
+                                            })
+                                        }
                                         className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-left transition hover:bg-red-100"
                                     >
                                         <p className="text-[13px] font-semibold text-red-700">
@@ -587,8 +744,8 @@ export default function KnowledgeBasePage() {
                                                     : confirmAction.type === 'deleteChunk'
                                                         ? 'Delete Knowledge Chunk'
                                                         : confirmAction.doc.is_active
-                                                            ? 'Disable Knowledge Item'
-                                                            : 'Enable Knowledge Item'}
+                                                            ? 'Disable Knowledge File'
+                                                            : 'Enable Knowledge File'}
                                         </h3>
 
                                         <p className="mt-1 text-sm font-medium leading-6 text-slate-500">
@@ -598,8 +755,9 @@ export default function KnowledgeBasePage() {
                                                     ? 'This action will permanently remove all chunks from the selected file.'
                                                     : confirmAction.type === 'deleteChunk'
                                                         ? 'This action will permanently remove only the selected chunk from Sisca knowledge base.'
-                                                        : `This action will mark the selected content as ${confirmAction.doc.is_active ? 'inactive' : 'active'
-                                                        } for Sisca RAG responses.`}
+                                                        : `This action will mark all chunks in the selected file as ${
+                                                              confirmAction.doc.is_active ? 'inactive' : 'active'
+                                                          } for Sisca RAG responses.`}
                                         </p>
                                     </div>
 
@@ -630,7 +788,9 @@ export default function KnowledgeBasePage() {
                                             <p className="mt-1 text-[12px] font-medium text-slate-500">
                                                 {confirmAction.type === 'deleteFile'
                                                     ? 'All chunks from this file'
-                                                    : getChunkLabel(confirmAction.doc)}
+                                                    : confirmAction.type === 'deleteChunk'
+                                                        ? getChunkLabel(confirmAction.doc)
+                                                        : 'All chunks from this file'}
                                             </p>
                                         </>
                                     )}
@@ -650,10 +810,13 @@ export default function KnowledgeBasePage() {
                                         type="button"
                                         disabled={isActionLoading}
                                         onClick={handleConfirmAction}
-                                        className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-[13px] font-semibold text-white transition disabled:bg-slate-300 ${confirmAction.type === 'deleteChunk' || confirmAction.type === 'deleteFile' || confirmAction.type === 'deleteAll'
+                                        className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-[13px] font-semibold text-white transition disabled:bg-slate-300 ${
+                                            confirmAction.type === 'deleteChunk' ||
+                                            confirmAction.type === 'deleteFile' ||
+                                            confirmAction.type === 'deleteAll'
                                                 ? 'bg-[#E3000F] hover:bg-[#C0000D]'
                                                 : 'bg-slate-900 hover:bg-slate-700'
-                                            }`}
+                                        }`}
                                     >
                                         {isActionLoading && <Loader2 size={15} className="animate-spin" />}
                                         {confirmAction.type === 'deleteAll'
@@ -663,8 +826,8 @@ export default function KnowledgeBasePage() {
                                                 : confirmAction.type === 'deleteChunk'
                                                     ? 'Delete Chunk'
                                                     : confirmAction.doc.is_active
-                                                        ? 'Disable'
-                                                        : 'Enable'}
+                                                        ? 'Disable File'
+                                                        : 'Enable File'}
                                     </button>
                                 </div>
                             </>

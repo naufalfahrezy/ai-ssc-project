@@ -3,7 +3,7 @@ import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { GoogleGenerativeAIEmbeddings } from '@langchain/google-genai';
 import mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
-import { supabase } from '@/lib/supabaseClient';
+import { supabaseAdmin } from '@/lib/supabase-server';
 
 const pdfParse = require('pdf-parse/lib/pdf-parse.js');
 
@@ -39,6 +39,12 @@ function cleanText(text: string) {
         .replace(/[ \t]+/g, ' ')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
+}
+
+function sanitizeFileName(fileName: string) {
+    return fileName
+        .replace(/[^\w.\-() ]+/g, '')
+        .replace(/\s+/g, '_');
 }
 
 async function parsePdf(buffer: Buffer) {
@@ -107,6 +113,10 @@ async function extractTextFromFile(file: File, buffer: Buffer) {
 }
 
 export async function POST(req: NextRequest) {
+    let uploadedStoragePath: string | null = null;
+    let uploadedBucketName: string | null = null;
+    let insertedDocumentId: string | null = null;
+
     try {
         console.log('Knowledge API called');
 
@@ -166,10 +176,83 @@ export async function POST(req: NextRequest) {
         const arrayBuffer = await file.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
 
+        const bucketName = process.env.SUPABASE_STORAGE_BUCKET || 'ssc_documents';
+        const safeFileName = sanitizeFileName(file.name);
+        const storagePath = `knowledge/${Date.now()}-${safeFileName}`;
+
+        uploadedBucketName = bucketName;
+        uploadedStoragePath = storagePath;
+
+        const { error: uploadError } = await supabaseAdmin.storage
+            .from(bucketName)
+            .upload(storagePath, buffer, {
+                contentType: file.type || 'application/octet-stream',
+                upsert: false,
+            });
+
+        if (uploadError) {
+            console.error('Supabase storage upload error:', uploadError);
+
+            return jsonResponse(
+                {
+                    success: false,
+                    error: `Gagal upload file ke Supabase Storage: ${uploadError.message}`,
+                    details: uploadError,
+                },
+                500
+            );
+        }
+
+        const { data: documentData, error: documentError } = await supabaseAdmin
+            .from('documents')
+            .insert({
+                file_name: safeFileName,
+                original_file_name: file.name,
+                storage_bucket: bucketName,
+                storage_path: storagePath,
+                mime_type: file.type || extension,
+                file_size: file.size,
+                is_active: true,
+            })
+            .select('id')
+            .single();
+
+        if (documentError || !documentData) {
+            console.error('Supabase document insert error:', documentError);
+
+            if (uploadedBucketName && uploadedStoragePath) {
+                await supabaseAdmin.storage
+                    .from(uploadedBucketName)
+                    .remove([uploadedStoragePath]);
+            }
+
+            return jsonResponse(
+                {
+                    success: false,
+                    error: `Gagal menyimpan metadata dokumen: ${documentError?.message || 'Tidak ada data dokumen yang dikembalikan.'}`,
+                    details: documentError,
+                },
+                500
+            );
+        }
+
+        insertedDocumentId = documentData.id;
+
         const rawContent = await extractTextFromFile(file, buffer);
         const cleanContent = cleanText(rawContent);
 
         if (!cleanContent) {
+            await supabaseAdmin
+                .from('documents')
+                .delete()
+                .eq('id', insertedDocumentId);
+
+            if (uploadedBucketName && uploadedStoragePath) {
+                await supabaseAdmin.storage
+                    .from(uploadedBucketName)
+                    .remove([uploadedStoragePath]);
+            }
+
             return jsonResponse(
                 {
                     success: false,
@@ -189,6 +272,17 @@ export async function POST(req: NextRequest) {
         const chunks = allChunks.slice(0, MAX_CHUNKS);
 
         if (chunks.length === 0) {
+            await supabaseAdmin
+                .from('documents')
+                .delete()
+                .eq('id', insertedDocumentId);
+
+            if (uploadedBucketName && uploadedStoragePath) {
+                await supabaseAdmin.storage
+                    .from(uploadedBucketName)
+                    .remove([uploadedStoragePath]);
+            }
+
             return jsonResponse(
                 {
                     success: false,
@@ -226,12 +320,16 @@ export async function POST(req: NextRequest) {
             const embedding = rawEmbedding.slice(0, EMBEDDING_DIMENSION);
 
             rows.push({
+                document_id: insertedDocumentId,
                 file_name: file.name,
                 file_url: null,
                 content: chunk,
                 embedding,
                 metadata: {
                     source: file.name,
+                    safe_file_name: safeFileName,
+                    storage_bucket: bucketName,
+                    storage_path: storagePath,
                     file_type: file.type || extension,
                     extension,
                     chunk_index: index,
@@ -247,10 +345,21 @@ export async function POST(req: NextRequest) {
             });
         }
 
-        const { error } = await supabase.from('knowledge_base').insert(rows);
+        const { error } = await supabaseAdmin.from('knowledge_base').insert(rows);
 
         if (error) {
             console.error('Supabase insert error:', error);
+
+            await supabaseAdmin
+                .from('documents')
+                .delete()
+                .eq('id', insertedDocumentId);
+
+            if (uploadedBucketName && uploadedStoragePath) {
+                await supabaseAdmin.storage
+                    .from(uploadedBucketName)
+                    .remove([uploadedStoragePath]);
+            }
 
             return jsonResponse(
                 {
@@ -265,9 +374,13 @@ export async function POST(req: NextRequest) {
         return jsonResponse(
             {
                 success: true,
-                message: 'Dokumen berhasil diproses dan disimpan.',
+                message: 'Dokumen berhasil diproses, diupload, dan disimpan ke knowledge base.',
+                document_id: insertedDocumentId,
                 file_name: file.name,
+                safe_file_name: safeFileName,
                 file_type: file.type || extension,
+                storage_bucket: bucketName,
+                storage_path: storagePath,
                 chunks: chunks.length,
                 original_total_chunks: allChunks.length,
                 is_limited: allChunks.length > MAX_CHUNKS,
@@ -277,6 +390,19 @@ export async function POST(req: NextRequest) {
         );
     } catch (error) {
         console.error('Knowledge upload error:', error);
+
+        if (insertedDocumentId) {
+            await supabaseAdmin
+                .from('documents')
+                .delete()
+                .eq('id', insertedDocumentId);
+        }
+
+        if (uploadedBucketName && uploadedStoragePath) {
+            await supabaseAdmin.storage
+                .from(uploadedBucketName)
+                .remove([uploadedStoragePath]);
+        }
 
         return jsonResponse(
             {

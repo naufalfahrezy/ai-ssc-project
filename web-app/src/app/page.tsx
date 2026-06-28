@@ -16,6 +16,7 @@ import {
   ClipboardList,
   Clock,
   Database,
+  Download,
   FileText,
   Headphones,
   Loader2,
@@ -41,10 +42,28 @@ import {
 type ChatRole = 'bot' | 'user';
 type ChatStep = 'onboarding' | 'chatting' | 'ticketing' | 'feedback';
 
+type ChatSource =
+  | string
+  | {
+      document_id?: string | null;
+      documentId?: string | null;
+      file_name?: string | null;
+      fileName?: string | null;
+      name?: string | null;
+      source?: string | null;
+      download_url?: string | null;
+      downloadUrl?: string | null;
+    };
+
+type NormalizedSource = {
+  fileName: string;
+  downloadUrl: string | null;
+};
+
 type ChatMessage = {
   role: ChatRole;
   content: string;
-  sources?: string[];
+  sources?: ChatSource[];
 };
 
 type WaGatewayStatus = {
@@ -177,6 +196,7 @@ export default function LandingPage() {
   const [isSubmittingTicket, setIsSubmittingTicket] = useState(false);
   const [feedbackRating, setFeedbackRating] = useState(0);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
+  const [downloadConfirmSource, setDownloadConfirmSource] = useState<NormalizedSource | null>(null);
   const [feedbackMessage, setFeedbackMessage] = useState('');
   const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
   const [hoverRating, setHoverRating] = useState(0);
@@ -475,7 +495,7 @@ export default function LandingPage() {
     const sourceMatch = text.match(/Sumber referensi:\s*([\s\S]*)/i);
 
     if (!sourceMatch || sourceMatch.index === undefined) {
-      return { cleanText: text.trim(), sources: [] as string[] };
+      return { cleanText: text.trim(), sources: [] as ChatSource[] };
     }
 
     const beforeSource = text.slice(0, sourceMatch.index).trim();
@@ -593,6 +613,60 @@ export default function LandingPage() {
     if (chat.sources?.length) return chat.sources;
 
     return extractSourcesFromText(chat.content).sources;
+  };
+
+  const normalizeSource = (source: ChatSource): NormalizedSource => {
+    if (typeof source === 'string') {
+      return {
+        fileName: source,
+        downloadUrl: null,
+      };
+    }
+
+    const fileName =
+      source.file_name ||
+      source.fileName ||
+      source.name ||
+      source.source ||
+      'Dokumen referensi';
+
+    const documentId = source.document_id || source.documentId || null;
+    const downloadUrl =
+      source.download_url ||
+      source.downloadUrl ||
+      (documentId ? `/api/knowledge/download?id=${encodeURIComponent(documentId)}` : null);
+
+    return {
+      fileName,
+      downloadUrl,
+    };
+  };
+
+  const normalizeSources = (sources: ChatSource[]) => {
+    const unique = new Map<string, NormalizedSource>();
+
+    sources.forEach((source) => {
+      const normalized = normalizeSource(source);
+      const key = `${normalized.fileName}-${normalized.downloadUrl || 'no-download'}`;
+
+      if (!unique.has(key)) {
+        unique.set(key, normalized);
+      }
+    });
+
+    return Array.from(unique.values());
+  };
+
+  const handleOpenDownloadConfirm = (source: NormalizedSource) => {
+    if (!source.downloadUrl) return;
+    setDownloadConfirmSource(source);
+  };
+
+  const handleConfirmDownload = () => {
+    if (!downloadConfirmSource?.downloadUrl) return;
+
+    window.open(downloadConfirmSource.downloadUrl, '_blank', 'noopener,noreferrer');
+    setDownloadConfirmSource(null);
   };
 
   const handleCopyResponse = async (content: string, index: number) => {
@@ -1226,7 +1300,7 @@ export default function LandingPage() {
                 <div className="flex flex-col gap-4">
                   {chatHistory.map((chat, idx) => {
                     const isUser = chat.role === 'user';
-                    const sources = getMessageSources(chat);
+                    const sources = normalizeSources(getMessageSources(chat));
 
                     return (
                       <div
@@ -1267,15 +1341,38 @@ export default function LandingPage() {
                                       Sumber
                                     </button>
 
-                                    <div className="pointer-events-none absolute bottom-full left-0 z-20 mb-2 w-64 translate-y-1 rounded-2xl bg-slate-900 p-3 text-[11px] font-medium leading-5 text-white opacity-0 shadow-xl transition-all group-hover:translate-y-0 group-hover:opacity-100">
-                                      <div className="mb-1 flex items-center gap-1.5 font-semibold">
+                                    <div className="absolute bottom-full left-0 z-20 mb-2 w-72 translate-y-1 rounded-2xl bg-slate-900 p-3 text-[11px] font-medium leading-5 text-white opacity-0 shadow-xl transition-all group-hover:translate-y-0 group-hover:opacity-100">
+                                      <div className="mb-2 flex items-center gap-1.5 font-semibold">
                                         <Info size={12} />
                                         Referensi dokumen
                                       </div>
-                                      <div className="space-y-1 text-slate-200">
+                                      <div className="space-y-2 text-slate-200">
                                         {sources.map((source, sourceIdx) => (
-                                          <div key={`${source}-${sourceIdx}`} className="break-words">
-                                            {source}
+                                          <div
+                                            key={`${source.fileName}-${sourceIdx}`}
+                                            className="rounded-xl bg-white/5 p-2"
+                                          >
+                                            <div className="break-words font-semibold text-white">
+                                              {source.fileName}
+                                            </div>
+
+                                            {source.downloadUrl ? (
+                                              <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleOpenDownloadConfirm(source);
+                                                }}
+                                                className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-900 transition hover:bg-slate-100"
+                                              >
+                                                <Download size={12} />
+                                                Unduh file
+                                              </button>
+                                            ) : (
+                                              <p className="mt-1 text-[10px] font-medium text-slate-400">
+                                                Link unduh belum tersedia.
+                                              </p>
+                                            )}
                                           </div>
                                         ))}
                                       </div>
@@ -1501,43 +1598,83 @@ export default function LandingPage() {
               </button>
             </div>
           )}
-        </div>
-      )}
+          {showEndConfirm && (
+            <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/55 px-4 backdrop-blur-[2px]">
+              <div className="w-full max-w-sm rounded-[1.5rem] bg-white p-6 shadow-[0_28px_90px_-40px_rgba(15,23,42,0.8)]">
+                <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl bg-red-50 text-[#E3000F]">
+                  <Power size={22} />
+                </div>
 
-      {showEndConfirm && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 px-4 backdrop-blur-[2px]">
-          <div className="w-full max-w-sm rounded-[1.5rem] bg-white p-6 shadow-[0_28px_90px_-40px_rgba(15,23,42,0.8)]">
-            <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl bg-red-50 text-[#E3000F]">
-              <Power size={22} />
+                <h3 className="text-lg font-semibold tracking-tight text-slate-950">
+                  Akhiri sesi obrolan?
+                </h3>
+                <p className="mt-2 text-sm font-medium leading-6 text-slate-500">
+                  Setelah sesi diakhiri, Kakak akan diarahkan untuk memberikan penilaian layanan Sisca.
+                </p>
+
+                <div className="mt-6 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowEndConfirm(false)}
+                    className="rounded-xl px-4 py-2.5 text-[13px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowEndConfirm(false);
+                      setChatStep('feedback');
+                    }}
+                    className="rounded-xl bg-[#E3000F] px-4 py-2.5 text-[13px] font-semibold text-white transition hover:bg-[#C0000D]"
+                  >
+                    Ya, akhiri
+                  </button>
+                </div>
+              </div>
             </div>
+          )}
 
-            <h3 className="text-lg font-semibold tracking-tight text-slate-950">
-              Akhiri sesi obrolan?
-            </h3>
-            <p className="mt-2 text-sm font-medium leading-6 text-slate-500">
-              Setelah sesi diakhiri, Kakak akan diarahkan untuk memberikan penilaian layanan Sisca.
-            </p>
+          {downloadConfirmSource && (
+            <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/55 px-4 backdrop-blur-[2px]">
+              <div className="w-full max-w-sm rounded-[1.5rem] bg-white p-6 shadow-[0_28px_90px_-40px_rgba(15,23,42,0.8)]">
+                <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl bg-red-50 text-[#E3000F]">
+                  <Download size={22} />
+                </div>
 
-            <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setShowEndConfirm(false)}
-                className="rounded-xl px-4 py-2.5 text-[13px] font-semibold text-slate-600 transition hover:bg-slate-100"
-              >
-                Batal
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowEndConfirm(false);
-                  setChatStep('feedback');
-                }}
-                className="rounded-xl bg-[#E3000F] px-4 py-2.5 text-[13px] font-semibold text-white transition hover:bg-[#C0000D]"
-              >
-                Ya, akhiri
-              </button>
+                <h3 className="text-lg font-semibold tracking-tight text-slate-950">
+                  Unduh dokumen referensi?
+                </h3>
+                <p className="mt-2 text-sm font-medium leading-6 text-slate-500">
+                  File berikut akan dibuka melalui tautan unduhan sementara dari Sisca.
+                </p>
+
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="break-words text-sm font-semibold text-slate-900">
+                    {downloadConfirmSource.fileName}
+                  </p>
+                </div>
+
+                <div className="mt-6 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDownloadConfirmSource(null)}
+                    className="rounded-xl px-4 py-2.5 text-[13px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmDownload}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-[#E3000F] px-4 py-2.5 text-[13px] font-semibold text-white transition hover:bg-[#C0000D]"
+                  >
+                    <Download size={14} />
+                    Unduh
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 

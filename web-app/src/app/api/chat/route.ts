@@ -21,6 +21,13 @@ type BotSettings = {
     match_count: number;
 };
 
+
+type SourceReference = {
+    file_name: string;
+    document_id: string | null;
+    download_url: string | null;
+};
+
 const defaultBotSettings: BotSettings = {
     system_prompt:
         'Kamu adalah Sisca, Student Information & Service Center Assistant untuk Telkom University Surabaya. Jawab dengan ramah, jelas, profesional, dan hanya berdasarkan konteks knowledge base yang diberikan.',
@@ -83,6 +90,72 @@ function isGreetingOnly(message: string) {
 
 function normalizeSourceList(sources: string[]) {
     return Array.from(new Set(sources.filter(Boolean)));
+}
+
+function buildSourceReferences(docs: any[]): SourceReference[] {
+    const sourceMap = new Map<string, SourceReference>();
+
+    docs.forEach((doc) => {
+        const fileName = String(doc.file_name || '').trim();
+        if (!fileName) return;
+
+        const documentId =
+            typeof doc.document_id === 'string' && doc.document_id.trim()
+                ? doc.document_id.trim()
+                : null;
+
+        const key = documentId || fileName;
+
+        if (!sourceMap.has(key)) {
+            sourceMap.set(key, {
+                file_name: fileName,
+                document_id: documentId,
+                download_url: documentId
+                    ? `/api/knowledge/download?id=${encodeURIComponent(documentId)}`
+                    : null,
+            });
+        }
+    });
+
+    return Array.from(sourceMap.values());
+}
+
+async function enrichDocsWithDocumentId(docs: any[]) {
+    const ids = docs
+        .map((doc) => doc?.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+
+    if (ids.length === 0) return docs;
+
+    const { data, error } = await supabaseAdmin
+        .from('knowledge_base')
+        .select('id, document_id, file_name')
+        .in('id', ids);
+
+    if (error) {
+        console.warn('Failed to enrich knowledge sources:', error.message);
+        return docs;
+    }
+
+    const documentMap = new Map(
+        (data || []).map((row: any) => [
+            row.id,
+            {
+                document_id: row.document_id || null,
+                file_name: row.file_name || null,
+            },
+        ])
+    );
+
+    return docs.map((doc) => {
+        const mapped = documentMap.get(doc.id);
+
+        return {
+            ...doc,
+            document_id: doc.document_id || mapped?.document_id || null,
+            file_name: doc.file_name || mapped?.file_name || null,
+        };
+    });
 }
 
 function cleanModelAnswer(answer: string) {
@@ -256,7 +329,7 @@ export async function POST(req: NextRequest) {
             );
         }
 
-        const relevantDocs = matches || [];
+        const relevantDocs = await enrichDocsWithDocumentId(matches || []);
 
         if (relevantDocs.length === 0) {
             const fallbackReply = `${botSettings.out_of_scope_message}
@@ -292,8 +365,9 @@ Sumber referensi:
             })
             .join('\n\n---\n\n');
 
+        const sourceReferences = buildSourceReferences(relevantDocs);
         const sourceList = normalizeSourceList(
-            relevantDocs.map((doc: any) => String(doc.file_name))
+            sourceReferences.map((source) => source.file_name)
         );
 
         const prompt = `
@@ -356,10 +430,15 @@ ${sourceList.map((source) => `- ${source}`).join('\n')}`;
         return NextResponse.json({
             reply: finalReply,
             sessionId: activeSessionId,
-            sources: sourceList,
+            sources: sourceReferences,
+            source_names: sourceList,
             matches: relevantDocs.map((doc: any) => ({
                 id: doc.id,
                 file_name: doc.file_name,
+                document_id: doc.document_id || null,
+                download_url: doc.document_id
+                    ? `/api/knowledge/download?id=${encodeURIComponent(doc.document_id)}`
+                    : null,
                 similarity: doc.similarity,
             })),
         });
